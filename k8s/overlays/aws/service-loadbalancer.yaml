@@ -1,0 +1,9 @@
+# Exposes the API through an AWS Network Load Balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: status-api
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer

@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: status-api-alerts
+spec:
+  groups:
+    - name: status-api
+      rules:
+        - alert: StatusApiDown
+          expr: absent(up{job="status-api"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: No status-api pods are being scraped successfully.
+
+        - alert: StatusApiHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{job="status-api", status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job="status-api"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than 5% of status-api requests fail with 5xx.
+
+        - alert: StatusApiHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_request_duration_seconds_bucket{job="status-api"}[5m]))
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: status-api p95 latency is above 500ms.

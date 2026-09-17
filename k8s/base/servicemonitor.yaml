@@ -1,0 +1,13 @@
+# Tells the Prometheus Operator (kube-prometheus-stack) to scrape /metrics from the Service.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: status-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: status-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

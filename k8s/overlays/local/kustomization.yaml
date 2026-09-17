@@ -1,0 +1,11 @@
+# Local kind cluster: the image is built locally and loaded with `kind load`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: status-api
+    newName: status-api
+    newTag: local

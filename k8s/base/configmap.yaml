@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: status-api-config
+data:
+  # Share of /api/* requests that fail with HTTP 500. Raise it to see the error-rate alert fire.
+  FAILURE_RATE: "0"
