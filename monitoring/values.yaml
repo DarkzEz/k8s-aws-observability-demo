@@ -1,0 +1,40 @@
+# Values for prometheus-community/kube-prometheus-stack, kept small enough for a laptop.
+# Install: make monitoring
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from every namespace, not only those labelled for this release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    retention: 2d
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+grafana:
+  # Local demo only. On a real cluster pass the password from a Secret (admin.existingSecret).
+  adminPassword: admin
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+
+# Control-plane components are not reachable on kind or EKS (managed control plane).
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
