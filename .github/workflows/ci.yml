@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  app:
+    name: App — lint and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/pyproject.toml
+      - run: pip install -e '.[dev]'
+      - run: ruff check . && ruff format --check .
+      - run: pytest --cov=status_api --cov-report=term-missing
+
+  image:
+    name: Image — build and scan
+    runs-on: ubuntu-latest
+    needs: app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag status-api:${{ github.sha }} app
+      - name: Scan image for HIGH/CRITICAL vulnerabilities
+        # Pinned to a commit SHA, not a tag: tags can be moved or deleted upstream.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: status-api:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  manifests:
+    name: Kubernetes — validate manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+      - name: Render and validate every overlay
+        run: |
+          for target in k8s/overlays/local k8s/overlays/aws monitoring; do
+            echo "::group::$target"
+            kubectl kustomize "$target" | kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            echo "::endgroup::"
+          done
+
+  terraform:
+    name: Terraform — fmt, validate, lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - uses: terraform-linters/setup-tflint@v4
+      - run: tflint --init && tflint
+
+  e2e:
+    name: E2E — deploy to kind and smoke test
+    runs-on: ubuntu-latest
+    needs: [app, manifests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          config: k8s/kind-config.yaml
+          cluster_name: status-api
+      - name: Build and load image
+        run: |
+          docker build --tag status-api:local app
+          kind load docker-image status-api:local --name status-api
+      - name: Install Prometheus Operator CRDs (ServiceMonitor, PrometheusRule)
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm install prometheus-operator-crds prometheus-community/prometheus-operator-crds --wait
+      - name: Deploy
+        run: |
+          kubectl apply -k k8s/overlays/local
+          kubectl -n status-api rollout status deployment/status-api --timeout=120s
+      - name: Smoke test
+        run: |
+          kubectl -n status-api port-forward svc/status-api 8080:80 &
+          sleep 3
+          curl --fail --silent http://127.0.0.1:8080/healthz
+          curl --fail --silent http://127.0.0.1:8080/api/quote
+          curl --fail --silent http://127.0.0.1:8080/metrics | grep -q 'http_requests_total{method="GET",route="/api/quote"'
+      - name: Debug info on failure
+        if: failure()
+        run: |
+          kubectl get all -A
+          kubectl -n status-api describe pods
+          kubectl -n status-api logs -l app.kubernetes.io/name=status-api --tail=100

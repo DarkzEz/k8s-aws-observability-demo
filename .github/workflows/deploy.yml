@@ -1,0 +1,60 @@
+# Builds the image, pushes it to ECR and rolls it out to EKS.
+# Manual trigger only, so the demo never deploys (and never costs money) by accident.
+#
+# Repository setup (Settings → Secrets and variables → Actions):
+#   secret   AWS_ROLE_ARN      = terraform output github_actions_role_arn
+#   variable AWS_REGION        = terraform output region
+#   variable EKS_CLUSTER_NAME  = terraform output cluster_name
+#   variable ECR_REPOSITORY    = status-api
+name: Deploy to EKS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # needed for OIDC login to AWS
+
+concurrency:
+  group: deploy-eks
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No `environment:` here on purpose: it would change the OIDC subject claim
+    # and stop matching the IAM trust policy (repo:<owner>/<repo>:ref:refs/heads/main).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          docker build --tag "$IMAGE" app
+          docker push "$IMAGE"
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER_NAME }}"
+
+      - uses: imranismail/setup-kustomize@v2
+
+      - name: Set image tag and apply
+        working-directory: k8s/overlays/aws
+        run: |
+          kustomize edit set image status-api=${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+          kubectl apply -k .
+          kubectl -n status-api rollout status deployment/status-api --timeout=180s
+
+      - name: Show service endpoint
+        run: kubectl -n status-api get svc status-api
